@@ -1,0 +1,29 @@
+# Logs
+logs/
+*.log
+
+# Data
+data/
+*.db
+*.json
+
+# Reports
+reports/
+*.md
+
+# PowerShell
+*.ps1xml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp
+temp/
+tmp/
