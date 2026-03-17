@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     ClawSysAdmin - 大文件扫描模块
 .DESCRIPTION
@@ -6,24 +6,14 @@
 .AUTHOR
     夜爪数字公司
 .VERSION
-    0.1.0
+    0.1.1
 #>
 
-# 设置编码
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+# Set per-script log name before loading common
+$script:CSA_LogDir  = "$env:USERPROFILE/.openclaw/workspace/skills/system-cleanup/logs"
+$script:CSA_LogFile = "$script:CSA_LogDir/large_files_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
 
-# 辅助函数：格式化字节
-function Format-Bytes {
-    param([long]$Bytes)
-    $sizes = @("B", "KB", "MB", "GB", "TB")
-    $order = 0
-    $value = $Bytes
-    while ($value -ge 1024 -and $order -lt $sizes.Count - 1) {
-        $value = $value / 1024
-        $order++
-    }
-    return "{0:N2} {1}" -f $value, $sizes[$order]
-}
+. "$PSScriptRoot/common.ps1"
 
 # ==================== 扫描大文件 ====================
 function Find-LargeFiles {
@@ -224,7 +214,7 @@ function Show-LargeFilesReport {
     Write-Host "💡 建议操作:" -ForegroundColor Cyan
     Write-Host "  1. 定期清理下载文件夹中的旧文件" -ForegroundColor White
     Write-Host "  2. 将大文件移动到外部存储或云盘" -ForegroundColor White
-    Write-Host "  3. 使用 ``openclaw run system-cleanup clean`` 清理临时文件" -ForegroundColor White
+    Write-Host "  3. 使用 `'openclaw run system-cleanup clean'` 清理临时文件" -ForegroundColor White
     Write-Host ""
 }
 

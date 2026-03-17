@@ -6,40 +6,22 @@
 .AUTHOR
     NightClaw Digital
 .VERSION
-    0.1.0
+    0.3.0
 #>
 
-# Set encoding
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+# Set per-script log name before loading common
+$script:CSA_LogDir  = "$env:USERPROFILE/.openclaw/workspace/skills/system-cleanup/logs"
+$script:CSA_LogFile = "$script:CSA_LogDir/monitor_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
 
-# Helper function: Format bytes
-function Format-Bytes {
-    param([long]$Bytes)
-    $sizes = @("B", "KB", "MB", "GB", "TB")
-    $order = 0
-    $value = $Bytes
-    while ($value -ge 1024 -and $order -lt $sizes.Count - 1) {
-        $value = $value / 1024
-        $order++
-    }
-    return "{0:N2} {1}" -f $value, $sizes[$order]
-}
-
-# Helper function: Get status icon
-function Get-StatusIcon {
-    param([int]$Value, [int]$Threshold = 80)
-    if ($Value -ge $Threshold) { return "[WARNING]" }
-    if ($Value -ge ($Threshold - 15)) { return "[CAUTION]" }
-    return "[OK]"
-}
+. "$PSScriptRoot/common.ps1"
 
 # ==================== CPU Monitor ====================
 function Get-CPUStatus {
     try {
         $cpu = Get-Counter "\Processor(_Total)\% Processor Time" -ErrorAction SilentlyContinue
         $cpuUsage = [math]::Round($cpu.CounterSamples[0].CookedValue, 2)
-        $cpuInfo = Get-WmiObject -Class Win32_Processor | Select-Object -First 1
-        
+        $cpuInfo = Get-CimInstance -ClassName Win32_Processor | Select-Object -First 1
+
         return @{
             Usage = $cpuUsage
             Name = $cpuInfo.Name
@@ -76,16 +58,16 @@ function Get-MemoryStatus {
 # ==================== Disk Monitor ====================
 function Get-DiskStatus {
     try {
-        $disks = Get-WmiObject -Class Win32_LogicalDisk | Where-Object { $_.DriveType -eq 3 }
-        $diskInfo = @()
-        
+        $disks = Get-CimInstance -ClassName Win32_LogicalDisk | Where-Object { $_.DriveType -eq 3 }
+        $diskInfo = [System.Collections.ArrayList]::new()
+
         foreach ($disk in $disks) {
             $size = $disk.Size
             $free = $disk.FreeSpace
             $used = $size - $free
             $usagePercent = if ($size -gt 0) { [math]::Round(($used / $size) * 100, 2) } else { 0 }
-            
-            $diskInfo += @{
+
+            $null = $diskInfo.Add(@{
                 Drive = $disk.DeviceID
                 Label = $disk.VolumeName
                 Total = Format-Bytes -Bytes $size
@@ -93,11 +75,11 @@ function Get-DiskStatus {
                 Free = Format-Bytes -Bytes $free
                 UsagePercent = $usagePercent
                 Status = Get-StatusIcon -Value $usagePercent -Threshold 85
-            }
+            })
         }
         return $diskInfo
     } catch {
-        return @()
+        return [System.Collections.ArrayList]::new()
     }
 }
 
@@ -126,8 +108,8 @@ function Get-NetworkStatus {
 # ==================== System Uptime ====================
 function Get-SystemUptime {
     try {
-        $os = Get-WmiObject -Class Win32_OperatingSystem
-        $uptime = (Get-Date) - $os.ConvertToDateTime($os.LastBootUpTime)
+        $os = Get-CimInstance -ClassName Win32_OperatingSystem
+        $uptime = (Get-Date) - $os.LastBootUpTime
         return "{0} days {1} hours {2} minutes" -f $uptime.Days, $uptime.Hours, $uptime.Minutes
     } catch {
         return "Unknown"
@@ -140,58 +122,76 @@ function Show-SystemStatus {
     Write-Host "    ClawSysAdmin - System Status Monitor" -ForegroundColor Cyan
     Write-Host "============================================================" -ForegroundColor Cyan
     Write-Host ""
-    
-    # CPU Status
-    $cpu = Get-CPUStatus
-    Write-Host "[CPU Status]" -ForegroundColor Yellow
-    Write-Host "  Processor: $($cpu.Name)" -ForegroundColor White
-    Write-Host "  Cores: $($cpu.Cores) cores / $($cpu.LogicalProcessors) threads" -ForegroundColor White
-    Write-Host "  Usage: $($cpu.Status) $($cpu.Usage)%" -ForegroundColor White
-    Write-Host ""
-    
-    # Memory Status
-    $memory = Get-MemoryStatus
-    Write-Host "[Memory Status]" -ForegroundColor Yellow
-    Write-Host "  Total: $($memory.Total)" -ForegroundColor White
-    Write-Host "  Used: $($memory.Used) ($($memory.UsagePercent)%) $($memory.Status)" -ForegroundColor White
-    Write-Host "  Free: $($memory.Free)" -ForegroundColor White
-    Write-Host ""
-    
-    # Disk Status
-    Write-Host "[Disk Status]" -ForegroundColor Yellow
-    $disks = Get-DiskStatus
-    foreach ($disk in $disks) {
-        Write-Host "  Drive $($disk.Drive) [$($disk.Label)]" -ForegroundColor White
-        Write-Host "    Total: $($disk.Total) | Used: $($disk.Used) | Free: $($disk.Free)" -ForegroundColor Gray
-        Write-Host "    Usage: $($disk.Status) $($disk.UsagePercent)%" -ForegroundColor White
-    }
-    Write-Host ""
-    
-    # Network Status
-    Write-Host "[Network Status]" -ForegroundColor Yellow
-    $networks = Get-NetworkStatus
-    if ($networks.Count -eq 0) {
-        Write-Host "  No active network connection detected" -ForegroundColor Gray
-    } else {
-        foreach ($net in $networks) {
-            Write-Host "  Adapter: $($net.Name)" -ForegroundColor White
-            Write-Host "    Speed: $($net.LinkSpeed)" -ForegroundColor Gray
-            Write-Host "    RX: $($net.ReceivedBytes) | TX: $($net.SentBytes)" -ForegroundColor Gray
+
+    try {
+        Write-Log "System monitor started" -Level "INFO"
+
+        # CPU Status
+        $cpu = Get-CPUStatus
+        Write-Host "[CPU Status]" -ForegroundColor Yellow
+        Write-Host "  Processor: $($cpu.Name)" -ForegroundColor White
+        Write-Host "  Cores: $($cpu.Cores) cores / $($cpu.LogicalProcessors) threads" -ForegroundColor White
+        Write-Host "  Usage: $($cpu.Status) $($cpu.Usage)%" -ForegroundColor White
+        Write-Host ""
+
+        # Memory Status
+        $memory = Get-MemoryStatus
+        Write-Host "[Memory Status]" -ForegroundColor Yellow
+        Write-Host "  Total: $($memory.Total)" -ForegroundColor White
+        Write-Host "  Used: $($memory.Used) ($($memory.UsagePercent)%) $($memory.Status)" -ForegroundColor White
+        Write-Host "  Free: $($memory.Free)" -ForegroundColor White
+        Write-Host ""
+
+        # Disk Status
+        Write-Host "[Disk Status]" -ForegroundColor Yellow
+        $disks = Get-DiskStatus
+        if ($null -eq $disks -or $disks.Count -eq 0) {
+            Write-Host "  Could not retrieve disk information" -ForegroundColor Gray
+        } else {
+            foreach ($disk in $disks) {
+                Write-Host "  Drive $($disk.Drive) [$($disk.Label)]" -ForegroundColor White
+                Write-Host "    Total: $($disk.Total) | Used: $($disk.Used) | Free: $($disk.Free)" -ForegroundColor Gray
+                Write-Host "    Usage: $($disk.Status) $($disk.UsagePercent)%" -ForegroundColor White
+            }
         }
+        Write-Host ""
+
+        # Network Status
+        Write-Host "[Network Status]" -ForegroundColor Yellow
+        $networks = Get-NetworkStatus
+        if ($null -eq $networks -or $networks.Count -eq 0) {
+            Write-Host "  No active network connection detected" -ForegroundColor Gray
+        } else {
+            foreach ($net in $networks) {
+                Write-Host "  Adapter: $($net.Name)" -ForegroundColor White
+                Write-Host "    Speed: $($net.LinkSpeed)" -ForegroundColor Gray
+                Write-Host "    RX: $($net.ReceivedBytes) | TX: $($net.SentBytes)" -ForegroundColor Gray
+            }
+        }
+        Write-Host ""
+
+        # System Uptime
+        $uptime = Get-SystemUptime
+        Write-Host "[System Info]" -ForegroundColor Yellow
+        Write-Host "  Uptime: $($uptime)" -ForegroundColor White
+        Write-Host "  Check Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Gray
+        Write-Host ""
+
+        # Status Legend
+        Write-Host "[Legend]" -ForegroundColor Gray
+        Write-Host "  [OK] Normal | [CAUTION] Attention | [WARNING] Alert | [?] Unknown" -ForegroundColor Gray
+        Write-Host ""
+        Write-Log "System monitor completed" -Level "SUCCESS"
+
+    } catch {
+        Write-Log "Monitor encountered an unexpected error: $($_.Exception.Message)" -Level "ERROR"
+        Write-Host ""
+        Write-Host "ERROR: Monitor encountered an unexpected error." -ForegroundColor Red
+        Write-Host "  $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "  Partial results may have been displayed above." -ForegroundColor Gray
+        Write-Host ""
+        exit 1
     }
-    Write-Host ""
-    
-    # System Uptime
-    $uptime = Get-SystemUptime
-    Write-Host "[System Info]" -ForegroundColor Yellow
-    Write-Host "  Uptime: $($uptime)" -ForegroundColor White
-    Write-Host "  Check Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Gray
-    Write-Host ""
-    
-    # Status Legend
-    Write-Host "[Legend]" -ForegroundColor Gray
-    Write-Host "  [OK] Normal | [CAUTION] Attention | [WARNING] Alert | [?] Unknown" -ForegroundColor Gray
-    Write-Host ""
 }
 
 # Execute main function

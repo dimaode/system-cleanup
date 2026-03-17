@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     ClawSysAdmin - 启动项管理模块
 .DESCRIPTION

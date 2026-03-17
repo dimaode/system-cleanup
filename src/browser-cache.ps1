@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     ClawSysAdmin - 浏览器缓存清理模块
 .DESCRIPTION
@@ -6,24 +6,14 @@
 .AUTHOR
     夜爪数字公司
 .VERSION
-    0.1.0
+    0.1.1
 #>
 
-# 设置编码
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+# Set per-script log name before loading common
+$script:CSA_LogDir  = "$env:USERPROFILE/.openclaw/workspace/skills/system-cleanup/logs"
+$script:CSA_LogFile = "$script:CSA_LogDir/browser_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
 
-# 辅助函数：格式化字节
-function Format-Bytes {
-    param([long]$Bytes)
-    $sizes = @("B", "KB", "MB", "GB", "TB")
-    $order = 0
-    $value = $Bytes
-    while ($value -ge 1024 -and $order -lt $sizes.Count - 1) {
-        $value = $value / 1024
-        $order++
-    }
-    return "{0:N2} {1}" -f $value, $sizes[$order]
-}
+. "$PSScriptRoot/common.ps1"
 
 # 辅助函数：清理目录
 function Clear-BrowserCache {

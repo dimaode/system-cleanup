@@ -6,57 +6,28 @@
 .AUTHOR
     NightClaw Digital
 .VERSION
-    0.2.0
+    0.3.0
 #>
 
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+# Set per-script log name before loading common (common.ps1 will pick it up)
+$script:CSA_LogDir  = "$env:USERPROFILE/.openclaw/workspace/skills/system-cleanup/logs"
+$script:CSA_LogFile = "$script:CSA_LogDir/cleanup_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
 
-$LogDir = "$env:USERPROFILE/.openclaw/workspace/skills/system-cleanup/logs"
-$LogFile = "$LogDir/cleanup_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
-
-if (!(Test-Path $LogDir)) {
-    New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
-}
-
-function Write-Log {
-    param([string]$Message, [string]$Level = "INFO")
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $logEntry = "[$timestamp] [$Level] $Message"
-    Add-Content -Path $LogFile -Value $logEntry
-    
-    switch ($Level) {
-        "ERROR" { Write-Host $Message -ForegroundColor Red }
-        "WARN"  { Write-Host $Message -ForegroundColor Yellow }
-        "INFO"  { Write-Host $Message -ForegroundColor White }
-        "SUCCESS" { Write-Host $Message -ForegroundColor Green }
-    }
-}
-
-function Format-Bytes {
-    param([long]$Bytes)
-    $sizes = @("B", "KB", "MB", "GB", "TB")
-    $order = 0
-    $value = $Bytes
-    while ($value -ge 1024 -and $order -lt $sizes.Count - 1) {
-        $value = $value / 1024
-        $order++
-    }
-    return "{0:N2} {1}" -f $value, $sizes[$order]
-}
+. "$PSScriptRoot/common.ps1"
 
 function Clear-TempFiles {
     Write-Log "Cleaning temp files..." -Level "INFO"
     $totalSize = 0
     $fileCount = 0
-    
+
     $tempPaths = @($env:TEMP, "$env:SystemRoot\Temp", "$env:LOCALAPPDATA\Temp", "$env:SystemRoot\Prefetch")
-    
+
     foreach ($path in $tempPaths) {
         if (Test-Path $path) {
             try {
-                $files = Get-ChildItem -Path $path -Recurse -Force -ErrorAction SilentlyContinue | 
+                $files = Get-ChildItem -Path $path -Recurse -Force -ErrorAction SilentlyContinue |
                          Where-Object { !$_.PSIsContainer -and $_.CreationTime -lt (Get-Date).AddDays(-1) }
-                
+
                 foreach ($file in $files) {
                     try {
                         $size = $file.Length
@@ -68,7 +39,7 @@ function Clear-TempFiles {
             } catch {}
         }
     }
-    
+
     Write-Log "Temp files cleaned: $fileCount files, $(Format-Bytes -Bytes $totalSize) freed" -Level "SUCCESS"
     return @{ Count = $fileCount; Size = $totalSize }
 }
@@ -165,63 +136,116 @@ function Start-SystemCleanup {
     Write-Host "    ClawSysAdmin - System Cleanup Tool" -ForegroundColor Cyan
     Write-Host "============================================================" -ForegroundColor Cyan
     Write-Host ""
-    
-    Write-Log "Starting system cleanup..." -Level "INFO"
-    Write-Log "Log file: $LogFile" -Level "INFO"
-    Write-Host ""
-    
-    $diskBefore = Get-WmiObject -Class Win32_LogicalDisk | Where-Object { $_.DeviceID -eq "C:" }
-    $freeBefore = $diskBefore.FreeSpace
-    
-    $results = @()
-    
-    Write-Host "----------------------------------------" -ForegroundColor Gray
-    $result = Clear-TempFiles
-    $results += @{ Name = "Temp Files"; Result = $result }
-    
-    Write-Host "----------------------------------------" -ForegroundColor Gray
-    $result = Clear-RecycleBinFiles
-    $results += @{ Name = "Recycle Bin"; Result = $result }
-    
-    Write-Host "----------------------------------------" -ForegroundColor Gray
-    $result = Clear-WindowsUpdateCache
-    $results += @{ Name = "Windows Update Cache"; Result = $result }
-    
-    Write-Host "----------------------------------------" -ForegroundColor Gray
-    $result = Clear-OldEventLogs
-    $results += @{ Name = "Event Logs"; Result = $result }
-    
-    $diskAfter = Get-WmiObject -Class Win32_LogicalDisk | Where-Object { $_.DeviceID -eq "C:" }
-    $freeAfter = $diskAfter.FreeSpace
-    $actualFreed = $freeAfter - $freeBefore
-    
-    Write-Host ""
-    Write-Host "============================================================" -ForegroundColor Green
-    Write-Host "    Cleanup Report" -ForegroundColor Green
-    Write-Host "============================================================" -ForegroundColor Green
-    Write-Host ""
-    
-    $totalFiles = 0
-    $estimatedSize = 0
-    foreach ($item in $results) {
-        Write-Host "  $($item.Name):" -ForegroundColor Yellow
-        Write-Host "    Files deleted: $($item.Result.Count)" -ForegroundColor White
-        Write-Host "    Space freed: $(Format-Bytes -Bytes $item.Result.Size)" -ForegroundColor White
-        $totalFiles += $item.Result.Count
-        $estimatedSize += $item.Result.Size
+
+    try {
+        $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+        Write-Log "Starting system cleanup..." -Level "INFO"
+        Write-Log "Log file: $script:CSA_LogFile" -Level "INFO"
+        Write-Host ""
+
+        # Get disk space before cleanup (safe fallback to 0 if CIM unavailable)
+        $freeBefore = 0
+        try {
+            $diskBefore = Get-CimInstance -ClassName Win32_LogicalDisk -ErrorAction Stop | Where-Object { $_.DeviceID -eq "C:" }
+            $freeBefore = if ($diskBefore) { $diskBefore.FreeSpace } else { 0 }
+        } catch {
+            Write-Log "Could not read disk space before cleanup: $($_.Exception.Message)" -Level "WARN"
+        }
+
+        $results = [System.Collections.ArrayList]::new()
+
+        Write-Host "----------------------------------------" -ForegroundColor Gray
+        try {
+            $result = Clear-TempFiles
+            $null = $results.Add(@{ Name = "Temp Files"; Result = $result })
+        } catch {
+            Write-Log "Temp file cleanup failed: $($_.Exception.Message)" -Level "ERROR"
+            $null = $results.Add(@{ Name = "Temp Files"; Result = @{ Count = 0; Size = 0 } })
+        }
+
+        Write-Host "----------------------------------------" -ForegroundColor Gray
+        try {
+            $result = Clear-RecycleBinFiles
+            $null = $results.Add(@{ Name = "Recycle Bin"; Result = $result })
+        } catch {
+            Write-Log "Recycle bin cleanup failed: $($_.Exception.Message)" -Level "ERROR"
+            $null = $results.Add(@{ Name = "Recycle Bin"; Result = @{ Count = 0; Size = 0 } })
+        }
+
+        Write-Host "----------------------------------------" -ForegroundColor Gray
+        try {
+            $result = Clear-WindowsUpdateCache
+            $null = $results.Add(@{ Name = "Windows Update Cache"; Result = $result })
+        } catch {
+            Write-Log "Windows update cache cleanup failed: $($_.Exception.Message)" -Level "ERROR"
+            $null = $results.Add(@{ Name = "Windows Update Cache"; Result = @{ Count = 0; Size = 0 } })
+        }
+
+        Write-Host "----------------------------------------" -ForegroundColor Gray
+        try {
+            $result = Clear-OldEventLogs
+            $null = $results.Add(@{ Name = "Event Logs"; Result = $result })
+        } catch {
+            Write-Log "Event log cleanup failed: $($_.Exception.Message)" -Level "ERROR"
+            $null = $results.Add(@{ Name = "Event Logs"; Result = @{ Count = 0; Size = 0 } })
+        }
+
+        # Get disk space after cleanup
+        $freeAfter = 0
+        $actualFreed = 0
+        try {
+            $diskAfter = Get-CimInstance -ClassName Win32_LogicalDisk -ErrorAction Stop | Where-Object { $_.DeviceID -eq "C:" }
+            $freeAfter = if ($diskAfter) { $diskAfter.FreeSpace } else { 0 }
+            $actualFreed = $freeAfter - $freeBefore
+        } catch {
+            Write-Log "Could not read disk space after cleanup: $($_.Exception.Message)" -Level "WARN"
+        }
+
+        $stopwatch.Stop()
+        $elapsed = $stopwatch.Elapsed
+
+        Write-Host ""
+        Write-Host "============================================================" -ForegroundColor Green
+        Write-Host "    Cleanup Report" -ForegroundColor Green
+        Write-Host "============================================================" -ForegroundColor Green
+        Write-Host ""
+
+        $totalFiles = 0
+        $estimatedSize = 0
+        foreach ($item in $results) {
+            Write-Host "  $($item.Name):" -ForegroundColor Yellow
+            Write-Host "    Files deleted: $($item.Result.Count)" -ForegroundColor White
+            Write-Host "    Space freed: $(Format-Bytes -Bytes $item.Result.Size)" -ForegroundColor White
+            $totalFiles += $item.Result.Count
+            $estimatedSize += $item.Result.Size
+        }
+
+        Write-Host ""
+        Write-Host "[Summary]" -ForegroundColor Cyan
+        Write-Host "  Total files deleted: $totalFiles" -ForegroundColor White
+        Write-Host "  Estimated space freed: $(Format-Bytes -Bytes $estimatedSize)" -ForegroundColor White
+        if ($actualFreed -ne 0) {
+            Write-Host "  Actual space freed: $(Format-Bytes -Bytes $actualFreed)" -ForegroundColor White
+        }
+        if ($freeAfter -ne 0) {
+            Write-Host "  C: Drive free space: $(Format-Bytes -Bytes $freeAfter)" -ForegroundColor White
+        }
+        Write-Host "  Time elapsed: $($elapsed.Minutes)m $($elapsed.Seconds)s $($elapsed.Milliseconds)ms" -ForegroundColor Gray
+        Write-Host ""
+
+        Write-Log "System cleanup completed in $($elapsed.TotalSeconds.ToString('F2'))s" -Level "SUCCESS"
+        Write-Host "Detailed log: $script:CSA_LogFile" -ForegroundColor Gray
+        Write-Host ""
+
+    } catch {
+        Write-Log "Unexpected error during system cleanup: $($_.Exception.Message)" -Level "ERROR"
+        Write-Host ""
+        Write-Host "ERROR: Cleanup encountered an unexpected error." -ForegroundColor Red
+        Write-Host "  $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "  Check log for details: $script:CSA_LogFile" -ForegroundColor Gray
+        Write-Host ""
+        exit 1
     }
-    
-    Write-Host ""
-    Write-Host "[Summary]" -ForegroundColor Cyan
-    Write-Host "  Total files deleted: $totalFiles" -ForegroundColor White
-    Write-Host "  Estimated space freed: $(Format-Bytes -Bytes $estimatedSize)" -ForegroundColor White
-    Write-Host "  Actual space freed: $(Format-Bytes -Bytes $actualFreed)" -ForegroundColor White
-    Write-Host "  C: Drive free space: $(Format-Bytes -Bytes $freeAfter)" -ForegroundColor White
-    Write-Host ""
-    
-    Write-Log "System cleanup completed" -Level "SUCCESS"
-    Write-Host "Detailed log: $LogFile" -ForegroundColor Gray
-    Write-Host ""
 }
 
 Start-SystemCleanup
